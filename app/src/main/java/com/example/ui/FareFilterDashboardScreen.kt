@@ -31,15 +31,21 @@ fun FareFilterDashboardScreen() {
     var serviceEnabled by remember { mutableStateOf(true) }
     var selectedApp by remember { mutableStateOf("All Apps") }
     
+    // Auto-click target settings
+    var targetKeywords by remember { mutableStateOf("Accept, Accept Ride, Confirm, Accept Order") }
+    var clickMethod by remember { mutableStateOf("Text Node Match (Smart)") } // "Text Node Match (Smart)" or "Coordinate Touch (Fallback)"
+    var targetXRatio by remember { mutableStateOf("50") } // % of screen width
+    var targetYRatio by remember { mutableStateOf("85") } // % of screen height
+
     var simFareInput by remember { mutableStateOf("300") }
     var simAppName by remember { mutableStateOf("Rapido") }
     var simResult by remember { mutableStateOf<String?>(null) }
 
     val logs = remember {
         mutableStateListOf(
-            TripNotificationLog("1", "Rapido", 320, true, "Triggered simulated accept tap", "10:42 AM"),
-            TripNotificationLog("2", "Ola", 250, false, "Ignored (Below minimum fare threshold ₹300)", "10:38 AM"),
-            TripNotificationLog("3", "Uber", 300, true, "Matched target fare rule", "10:15 AM")
+            TripNotificationLog("1", "Rapido", 320, true, "Clicked node 'Accept Ride' at bounds (X: 540, Y: 1820)", "10:42 AM"),
+            TripNotificationLog("2", "Ola", 250, false, "Ignored (Below threshold ₹300)", "10:38 AM"),
+            TripNotificationLog("3", "Uber", 300, true, "Clicked node 'ACCEPT' at bounds (X: 540, Y: 1750)", "10:15 AM")
         )
     }
 
@@ -212,6 +218,100 @@ fun FareFilterDashboardScreen() {
             }
 
             item {
+                // Auto-Touch Target & Click Strategy Configuration Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.TouchApp,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Auto-Touch Target Strategy",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Text(
+                            text = "How the app locates and clicks the 'Accept Ride' button on popups.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Keyword Text Node Matching Section
+                        Text(
+                            text = "1. Target Button Keyword (Recommended)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = targetKeywords,
+                            onValueChange = { targetKeywords = it },
+                            label = { Text("Button Text Keywords (comma separated)") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("keywords_input"),
+                            singleLine = true
+                        )
+                        Text(
+                            text = "Searches screen UI nodes for words like 'Accept' or 'Accept Ride' and triggers click directly on the element.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                        )
+
+                        Divider()
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Touch Gesture Fallback Section
+                        Text(
+                            text = "2. Coordinate Touch Gesture (Fallback)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedTextField(
+                                value = targetXRatio,
+                                onValueChange = { targetXRatio = it },
+                                label = { Text("Screen X %") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = targetYRatio,
+                                onValueChange = { targetYRatio = it },
+                                label = { Text("Screen Y %") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                        }
+                        Text(
+                            text = "If text nodes are unreadable, uses DispatchGesture API to perform tap at (${targetXRatio}% width, ${targetYRatio}% height).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            item {
                 // Interactive Test Simulator Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -259,15 +359,16 @@ fun FareFilterDashboardScreen() {
                                     val currentTarget = minFareInput.toIntOrNull() ?: 300
                                     val simFare = simFareInput.toIntOrNull() ?: 0
                                     val isMatch = if (exactOnly) simFare == currentTarget else simFare >= currentTarget
+                                    val firstKeyword = targetKeywords.split(",").firstOrNull()?.trim() ?: "Accept Ride"
                                     
                                     if (isMatch && serviceEnabled) {
-                                        simResult = "MATCH! Simulated tap on $simAppName trip ₹$simFare"
+                                        simResult = "MATCH! Clicked '$firstKeyword' button on $simAppName trip ₹$simFare"
                                         logs.add(0, TripNotificationLog(
                                             id = System.currentTimeMillis().toString(),
                                             appName = simAppName,
                                             fareAmount = simFare,
                                             matched = true,
-                                            actionTaken = "Simulated accept tap executed",
+                                            actionTaken = "Auto-clicked node '$firstKeyword' at bounds (X:${targetXRatio}%, Y:${targetYRatio}%)",
                                             timestamp = "Just now"
                                         ))
                                     } else {
@@ -322,35 +423,37 @@ fun FareFilterDashboardScreen() {
             }
 
             item {
-                // Educational Accessibility Service Guide
+                // Device Setup & Enable Guide Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
                     )
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = Icons.Default.Info,
+                                imageVector = Icons.Default.SettingsAccessibility,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.secondary
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "How Android Background Automation Works",
+                                text = "How to Enable on Real Device",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
                             )
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = "• Android AccessibilityService allows helper tools to inspect screen nodes and detect fare texts on trip popups.\n" +
-                                   "• DispatchGesture API enables touch interactions without covering or obstructing the screen.\n" +
-                                   "• System policy requires explicit user confirmation in Accessibility Settings before background automation is enabled.",
+                            text = "To make background auto-clicking work on your physical Android phone:\n\n" +
+                                   "1. Open Phone Settings → Accessibility → Installed Apps / Services.\n" +
+                                   "2. Locate 'Fare Filter Assistant' and toggle service ON.\n" +
+                                   "3. Grant 'Display over other apps' (Overlay Permission) if prompted.\n" +
+                                   "4. When a trip popup arrives, the Accessibility Service detects the fare text and automatically performs a tap on the Accept node.",
                             style = MaterialTheme.typography.bodySmall,
-                            lineHeight = 18.sp,
+                            lineHeight = 20.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
