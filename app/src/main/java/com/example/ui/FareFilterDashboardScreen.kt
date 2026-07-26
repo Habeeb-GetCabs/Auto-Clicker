@@ -88,9 +88,36 @@ fun FareFilterDashboardScreen() {
     
     // Auto-click target settings
     var targetKeywords by remember { mutableStateOf("Accept, Accept Ride, Confirm, Accept Order") }
-    var clickMethod by remember { mutableStateOf("Text Node Match (Smart)") } // "Text Node Match (Smart)" or "Coordinate Touch (Fallback)"
+    var cooldownSecondsInput by remember { mutableStateOf("4") } // Minimum interval between auto-clicks
+    var enableFallbackGesture by remember { mutableStateOf(false) } // Safe default false
     var targetXRatio by remember { mutableStateOf("50") } // % of screen width
     var targetYRatio by remember { mutableStateOf("85") } // % of screen height
+
+    // Keep FareAccessibilityService configuration parameters strictly in sync
+    LaunchedEffect(
+        minFareInput,
+        exactOnly,
+        serviceEnabled,
+        selectedApp,
+        targetKeywords,
+        cooldownSecondsInput,
+        enableFallbackGesture,
+        targetXRatio,
+        targetYRatio,
+        isAccessibilityEnabled,
+        isOverlayEnabled
+    ) {
+        val parsedFare = minFareInput.toIntOrNull() ?: 300
+        FareAccessibilityService.minFareThreshold = parsedFare
+        FareAccessibilityService.exactOnlyMatch = exactOnly
+        FareAccessibilityService.isServiceRuleActive = serviceEnabled && isAccessibilityEnabled && isOverlayEnabled
+        FareAccessibilityService.targetAppName = selectedApp
+        FareAccessibilityService.targetKeywordsList = targetKeywords.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        FareAccessibilityService.actionCooldownMs = ((cooldownSecondsInput.toLongOrNull() ?: 4L) * 1000L).coerceAtLeast(1000L)
+        FareAccessibilityService.enableFallbackGesture = enableFallbackGesture
+        FareAccessibilityService.targetXRatioPercent = targetXRatio.toIntOrNull() ?: 50
+        FareAccessibilityService.targetYRatioPercent = targetYRatio.toIntOrNull() ?: 85
+    }
 
     var simFareInput by remember { mutableStateOf("300") }
     var simAppName by remember { mutableStateOf("Rapido") }
@@ -536,43 +563,89 @@ fun FareFilterDashboardScreen() {
                             modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
                         )
 
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = cooldownSecondsInput,
+                            onValueChange = { cooldownSecondsInput = it.filter { char -> char.isDigit() } },
+                            label = { Text("Auto-Click Rate Limit Cooldown (Seconds)") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("cooldown_input"),
+                            singleLine = true
+                        )
+                        Text(
+                            text = "Prevents repeated clicks by waiting at least ${cooldownSecondsInput.ifEmpty { "4" }} second(s) between auto-accept actions.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                        )
+
                         Divider()
 
                         Spacer(modifier = Modifier.height(12.dp))
 
                         // Touch Gesture Fallback Section
-                        Text(
-                            text = "2. Coordinate Touch Gesture (Fallback)",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            OutlinedTextField(
-                                value = targetXRatio,
-                                onValueChange = { targetXRatio = it },
-                                label = { Text("Screen X %") },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true
-                            )
-                            OutlinedTextField(
-                                value = targetYRatio,
-                                onValueChange = { targetYRatio = it },
-                                label = { Text("Screen Y %") },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "2. Coordinate Touch Gesture (Fallback)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = if (enableFallbackGesture) "ENABLED (May tap fixed screen position)" else "DISABLED (Recommended for Screen Safety)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (enableFallbackGesture) MaterialTheme.colorScheme.tertiary else Color(0xFF10B981)
+                                )
+                            }
+                            Switch(
+                                checked = enableFallbackGesture,
+                                onCheckedChange = { enableFallbackGesture = it },
+                                modifier = Modifier.testTag("fallback_gesture_switch")
                             )
                         }
-                        Text(
-                            text = "If text nodes are unreadable, uses DispatchGesture API to perform tap at (${targetXRatio}% width, ${targetYRatio}% height).",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
+
+                        if (enableFallbackGesture) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = targetXRatio,
+                                    onValueChange = { targetXRatio = it },
+                                    label = { Text("Screen X %") },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true
+                                )
+                                OutlinedTextField(
+                                    value = targetYRatio,
+                                    onValueChange = { targetYRatio = it },
+                                    label = { Text("Screen Y %") },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true
+                                )
+                            }
+                            Text(
+                                text = "Dispatches screen gesture tap at (${targetXRatio}% width, ${targetYRatio}% height) if button text is not found.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        } else {
+                            Text(
+                                text = "Smart Text Node Match is active. Coordinate taps are disabled to prevent accidental screen presses.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
                 }
             }
