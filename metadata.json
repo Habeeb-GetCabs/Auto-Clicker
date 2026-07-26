@@ -1,0 +1,6 @@
+{
+  "name": "Fare Filter Assistant",
+  "description": "Ride trip fare calculator, accessibility service guide, and auto-click simulator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
