@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Fare Filter Assistant</string>
+    <string name="accessibility_service_description">Monitors ride trip popups and helps auto-accept fares matching your target criteria.</string>
 </resources>

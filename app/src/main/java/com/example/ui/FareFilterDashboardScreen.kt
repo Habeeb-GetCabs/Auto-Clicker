@@ -1,5 +1,11 @@
 package com.example.ui
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.text.TextUtils
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,16 +22,65 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.model.FareRule
 import com.example.model.TripNotificationLog
+import com.example.service.FareAccessibilityService
+
+fun checkOverlayPermissionEnabled(context: Context): Boolean {
+    return Settings.canDrawOverlays(context)
+}
+
+fun checkAccessibilityServiceEnabled(context: Context): Boolean {
+    val expectedComponentName = ComponentName(context, FareAccessibilityService::class.java)
+    val enabledServicesSetting = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ) ?: return false
+
+    val colonSplitter = TextUtils.SimpleStringSplitter(':')
+    colonSplitter.setString(enabledServicesSetting)
+
+    while (colonSplitter.hasNext()) {
+        val componentNameString = colonSplitter.next()
+        val enabledService = ComponentName.unflattenFromString(componentNameString)
+        if (enabledService != null && enabledService == expectedComponentName) {
+            return true
+        }
+    }
+    return false
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FareFilterDashboardScreen() {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    var isAccessibilityEnabled by remember { mutableStateOf(checkAccessibilityServiceEnabled(context)) }
+    var isOverlayEnabled by remember { mutableStateOf(checkOverlayPermissionEnabled(context)) }
+
+    // Re-check permissions whenever app resumes from Settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isAccessibilityEnabled = checkAccessibilityServiceEnabled(context)
+                isOverlayEnabled = checkOverlayPermissionEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     var minFareInput by remember { mutableStateOf("300") }
     var exactOnly by remember { mutableStateOf(false) }
     var serviceEnabled by remember { mutableStateOf(true) }
@@ -82,13 +137,14 @@ fun FareFilterDashboardScreen() {
         ) {
             item {
                 Spacer(modifier = Modifier.height(8.dp))
+                val allPermissionsReady = isAccessibilityEnabled && isOverlayEnabled
                 // Service status banner & toggle
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("status_card"),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (serviceEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                        containerColor = if (serviceEnabled && allPermissionsReady) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
                     ),
                     shape = RoundedCornerShape(16.dp)
                 ) {
@@ -105,11 +161,11 @@ fun FareFilterDashboardScreen() {
                                     modifier = Modifier
                                         .size(10.dp)
                                         .clip(CircleShape)
-                                        .background(if (serviceEnabled) Color(0xFF10B981) else Color.Gray)
+                                        .background(if (serviceEnabled && allPermissionsReady) Color(0xFF10B981) else Color.Red)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (serviceEnabled) "Filter Active" else "Filter Paused",
+                                    text = if (!allPermissionsReady) "Permissions Required" else if (serviceEnabled) "Filter Active" else "Filter Paused",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -117,7 +173,11 @@ fun FareFilterDashboardScreen() {
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (serviceEnabled) "Monitoring ride alerts against target price" else "Tap toggle to resume fare calculation",
+                                text = if (!isAccessibilityEnabled && !isOverlayEnabled) "Enable Accessibility & Overlay permissions below to begin"
+                                       else if (!isAccessibilityEnabled) "Requires Accessibility Service permission to read screen & auto-accept"
+                                       else if (!isOverlayEnabled) "Requires Display Over Other Apps permission to operate over ride popups"
+                                       else if (serviceEnabled) "Monitoring ride alerts against target price"
+                                       else "Tap toggle to resume fare calculation",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -127,6 +187,212 @@ fun FareFilterDashboardScreen() {
                             onCheckedChange = { serviceEnabled = it },
                             modifier = Modifier.testTag("service_switch")
                         )
+                    }
+                }
+            }
+
+            item {
+                // Accessibility Permission Request & Activation Card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("accessibility_card"),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isAccessibilityEnabled) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isAccessibilityEnabled) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (isAccessibilityEnabled) Color(0xFF10B981) else MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isAccessibilityEnabled) "Accessibility Service: ENABLED" else "Accessibility Permission Required",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        if (isAccessibilityEnabled) {
+                            Text(
+                                text = "Fare Filter Assistant is active and listening for trip popups to auto-accept matches.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Accessibility Settings")
+                            }
+                        } else {
+                            Text(
+                                text = "To automatically detect fare amounts and tap 'Accept Ride' when ride requests appear, you MUST turn on Accessibility Service in Android Settings.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                lineHeight = 18.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Button(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("enable_accessibility_button"),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Icon(Icons.Default.SettingsAccessibility, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("ENABLE ACCESSIBILITY SERVICE", fontWeight = FontWeight.Bold)
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.fromParts("package", context.packageName, null)
+                                    }
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("App Info (If Restricted Setting)")
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "How to enable on your device:",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "1. Tap 'ENABLE ACCESSIBILITY SERVICE' above.\n" +
+                                               "2. Tap 'Downloaded apps' or 'Accessibility Services'.\n" +
+                                               "3. Find 'Fare Filter Assistant' and toggle it ON.\n" +
+                                               "4. If grayed out ('Restricted setting'): Tap 'App Info' button above → tap 3-dots (⋮) in top right → select 'Allow restricted settings'.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontSize = 12.sp,
+                                        lineHeight = 17.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                // Display Over Other Apps (Overlay) Permission Card
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("overlay_permission_card"),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isOverlayEnabled) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (isOverlayEnabled) Icons.Default.CheckCircle else Icons.Default.Layers,
+                                contentDescription = null,
+                                tint = if (isOverlayEnabled) Color(0xFF10B981) else MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isOverlayEnabled) "Display Over Other Apps: ENABLED" else "Display Over Other Apps Permission",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        if (isOverlayEnabled) {
+                            Text(
+                                text = "Overlay permission granted. The app can run auto-touch and status indicators over ride-sharing popups.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Manage Overlay Settings")
+                            }
+                        } else {
+                            Text(
+                                text = "Required to allow auto-accept actions and overlay floating status badges when ride popups appear over other apps.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                lineHeight = 18.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Button(
+                                onClick = {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    context.startActivity(intent)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("enable_overlay_button"),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Icon(Icons.Default.Layers, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("ALLOW DISPLAY OVER OTHER APPS", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
