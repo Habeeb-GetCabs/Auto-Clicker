@@ -2,11 +2,18 @@ package com.example.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -14,6 +21,10 @@ class FareAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "FareAccessibility"
+        private const val PREFS_NAME = "fare_filter_prefs"
+        private const val NOTIFICATION_CHANNEL_ID = "fare_filter_bg_channel"
+        private const val NOTIFICATION_ID = 8810
+
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning
 
@@ -23,92 +34,200 @@ class FareAccessibilityService : AccessibilityService() {
         var targetAppName: String = "All Apps"
         var targetKeywordsList: List<String> = listOf("Accept", "Accept Ride", "Confirm", "Accept Order", "Accept Trip")
         
-        // Fallback gesture option
         var enableFallbackGesture: Boolean = true
         var targetXRatioPercent: Int = 50
         var targetYRatioPercent: Int = 85
 
         private var lastActionTimestamp: Long = 0L
-        var actionCooldownMs: Long = 2000L // 2-second safety cooldown
+        var actionCooldownMs: Long = 2000L
 
         val lastLogMessage = MutableStateFlow("Accessibility Service Initialized (Standby)")
+
+        fun updatePrefs(
+            context: Context,
+            minFare: Int,
+            exactOnly: Boolean,
+            serviceActive: Boolean,
+            targetApp: String,
+            keywords: String,
+            cooldownSeconds: Long,
+            fallbackGesture: Boolean,
+            xRatio: Int,
+            yRatio: Int
+        ) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putInt("min_fare", minFare)
+                .putBoolean("exact_only", exactOnly)
+                .putBoolean("service_active", serviceActive)
+                .putString("target_app", targetApp)
+                .putString("keywords", keywords)
+                .putLong("cooldown_seconds", cooldownSeconds)
+                .putBoolean("fallback_gesture", fallbackGesture)
+                .putInt("x_ratio", xRatio)
+                .putInt("y_ratio", yRatio)
+                .apply()
+
+            // Update live static values
+            minFareThreshold = minFare
+            exactOnlyMatch = exactOnly
+            isServiceRuleActive = serviceActive
+            targetAppName = targetApp
+            targetKeywordsList = keywords.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            actionCooldownMs = (cooldownSeconds * 1000L).coerceAtLeast(1000L)
+            enableFallbackGesture = fallbackGesture
+            targetXRatioPercent = xRatio
+            targetYRatioPercent = yRatio
+        }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         _isRunning.value = true
-        Log.d(TAG, "FareAccessibilityService Connected")
-        lastLogMessage.value = "Service connected & watching ride apps"
+        loadPrefs()
+        createNotificationChannel()
+        startForegroundNotification()
+        Log.d(TAG, "FareAccessibilityService Connected & Loaded Prefs")
+        lastLogMessage.value = "Service active in background & watching ride apps"
+    }
+
+    private fun loadPrefs() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        minFareThreshold = prefs.getInt("min_fare", 100)
+        exactOnlyMatch = prefs.getBoolean("exact_only", false)
+        isServiceRuleActive = prefs.getBoolean("service_active", true)
+        targetAppName = prefs.getString("target_app", "All Apps") ?: "All Apps"
+        val kwStr = prefs.getString("keywords", "Accept, Accept Ride, Confirm, Accept Order, Accept Trip") ?: "Accept, Accept Ride, Confirm"
+        targetKeywordsList = kwStr.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        actionCooldownMs = (prefs.getLong("cooldown_seconds", 2L) * 1000L).coerceAtLeast(1000L)
+        enableFallbackGesture = prefs.getBoolean("fallback_gesture", true)
+        targetXRatioPercent = prefs.getInt("x_ratio", 50)
+        targetYRatioPercent = prefs.getInt("y_ratio", 85)
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "Fare Filter Background Monitor",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps Fare Filter active to auto-accept rides in background"
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun startForegroundNotification() {
+        try {
+            val notification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+                .setContentTitle("Fare Filter Assistant Active")
+                .setContentText("Monitoring ride offers (≥ ₹$minFareThreshold) in background")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .build()
+
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not start foreground notification", e)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        loadPrefs()
         if (!isServiceRuleActive || event == null) return
 
-        val pkgName = event.packageName?.toString()?.lowercase() ?: return
+        // Retrieve package name safely from event or root window
+        val pkgName = (event.packageName?.toString() ?: rootInActiveWindow?.packageName?.toString() ?: "").lowercase()
 
-        // Ignore soft keyboards & system menus
+        // Ignore soft keyboards
         if (pkgName.contains("inputmethod") || 
             pkgName.contains("keyboard") || 
-            pkgName.contains("systemui") || 
-            pkgName.contains("launcher") || 
-            pkgName.contains("settings")) {
+            pkgName.contains("gboard") || 
+            pkgName.contains("latin")) {
             return
         }
 
-        // Target App Filter
+        // Do not auto-click on our own application settings UI
+        val selfPkg = packageName.lowercase()
+        if (pkgName == selfPkg || pkgName.contains("com.example") || pkgName.contains("com.aistudio")) {
+            return
+        }
+
+        // Filter target app if specified
         when (targetAppName) {
             "Rapido" -> if (!pkgName.contains("rapido")) return
             "Ola" -> if (!pkgName.contains("ola")) return
             "Uber" -> if (!pkgName.contains("uber")) return
         }
 
-        // Rate limit cooldown
+        // Rate limiting cooldown check
         val now = System.currentTimeMillis()
         if (now - lastActionTimestamp < actionCooldownMs) {
             return
         }
 
-        val rootNode = rootInActiveWindow ?: event.source ?: return
-        try {
-            scanAndProcessWindow(rootNode, pkgName)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error processing accessibility event", e)
+        // Collect root nodes from active window or interactive windows
+        val nodesToScan = mutableListOf<AccessibilityNodeInfo>()
+        
+        rootInActiveWindow?.let { nodesToScan.add(it) }
+        event.source?.let { nodesToScan.add(it) }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                for (window in windows) {
+                    window.root?.let { nodesToScan.add(it) }
+                }
+            } catch (e: Exception) {
+                // Ignore window query error
+            }
+        }
+
+        var handled = false
+        for (rootNode in nodesToScan) {
+            if (handled) break
+            try {
+                handled = scanAndProcessNode(rootNode, pkgName.ifEmpty { "Ride App" })
+            } catch (e: Exception) {
+                Log.e(TAG, "Error scanning node", e)
+            }
         }
     }
 
-    private fun scanAndProcessWindow(rootNode: AccessibilityNodeInfo, pkgName: String) {
+    private fun scanAndProcessNode(rootNode: AccessibilityNodeInfo, appLabel: String): Boolean {
         val extractedFare = extractFareFromTree(rootNode)
         
         if (extractedFare != null) {
             val matches = if (exactOnlyMatch) extractedFare == minFareThreshold else extractedFare >= minFareThreshold
             if (matches) {
-                lastLogMessage.value = "Match found: ₹$extractedFare >= target ₹$minFareThreshold on $pkgName. Triggering accept..."
-                val clicked = findAndClickAcceptButton(rootNode, pkgName)
+                lastLogMessage.value = "Ride fare ₹$extractedFare detected on $appLabel! Searching accept button..."
+                val clicked = findAndClickAcceptButton(rootNode, appLabel)
                 if (clicked) {
                     lastActionTimestamp = System.currentTimeMillis()
+                    return true
                 }
             } else {
-                lastLogMessage.value = "Detected fare ₹$extractedFare (< target ₹$minFareThreshold). Skipping."
+                lastLogMessage.value = "Fare ₹$extractedFare on $appLabel is below target ₹$minFareThreshold. Skipped."
             }
         }
+        return false
     }
 
     /**
-     * Intelligently parses currency values like "₹164 + ₹20", "₹164", "Rs 200" from node tree
+     * Recursively parses fare amounts like "₹164", "₹164 + ₹20", "Rs 200" from accessibility nodes
      */
     private fun extractFareFromTree(node: AccessibilityNodeInfo): Int? {
         val text = (node.text?.toString() ?: "") + " " + (node.contentDescription?.toString() ?: "")
         
-        // Find all currency matches in this node's text
         val currencyRegex = Regex("(?:₹|Rs\\.?|INR)\\s*([0-9]{2,5})", RegexOption.IGNORE_CASE)
         val matches = currencyRegex.findAll(text).mapNotNull { it.groupValues[1].toIntOrNull() }.toList()
 
         if (matches.isNotEmpty()) {
-            // Sum up values if multiple fares appear in same block (e.g. ₹164 + ₹20 = ₹184)
             return matches.sum()
         }
 
-        // Search children recursively
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val childFare = extractFareFromTree(child)
@@ -119,50 +238,50 @@ class FareAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findAndClickAcceptButton(rootNode: AccessibilityNodeInfo, pkgName: String): Boolean {
-        // 1. Full tree search for nodes matching target keywords (e.g., "Accept")
+    private fun findAndClickAcceptButton(rootNode: AccessibilityNodeInfo, appLabel: String): Boolean {
+        // 1. Search for nodes matching target keywords (e.g. "Accept")
         val targetNode = findNodeByKeywords(rootNode, targetKeywordsList)
 
         if (targetNode != null) {
-            // Try direct click
+            // Direct click
             if (targetNode.isClickable) {
                 targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                lastLogMessage.value = "AUTO-ACCEPTED ride on $pkgName via direct click!"
+                lastLogMessage.value = "AUTO-ACCEPTED ride (₹ matches) on $appLabel via direct click!"
                 return true
             }
 
-            // Try parent click
+            // Parent clickable container
             var parent = targetNode.parent
             while (parent != null) {
                 if (parent.isClickable) {
                     parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    lastLogMessage.value = "AUTO-ACCEPTED ride on $pkgName via parent container click!"
+                    lastLogMessage.value = "AUTO-ACCEPTED ride on $appLabel via container click!"
                     return true
                 }
                 parent = parent.parent
             }
 
-            // Perform precise coordinate tap on the center of the 'Accept' button bounds
+            // Precise bounds center tap gesture
             val bounds = Rect()
             targetNode.getBoundsInScreen(bounds)
             if (bounds.width() > 0 && bounds.height() > 0) {
-                tapAtCoordinates(bounds.centerX().toFloat(), bounds.centerY().toFloat(), "Target Button Center Bounds")
-                lastLogMessage.value = "AUTO-ACCEPTED ride on $pkgName via precise button tap at (${bounds.centerX()}, ${bounds.centerY()})"
+                tapAtCoordinates(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                lastLogMessage.value = "AUTO-ACCEPTED ride on $appLabel via precise gesture tap at (${bounds.centerX()}, ${bounds.centerY()})"
                 return true
             }
         }
 
-        // 2. Fallback gesture tap if enabled
+        // 2. Fallback gesture tap at configured screen coordinates ratio
         if (enableFallbackGesture) {
             val displayMetrics = resources.displayMetrics
             val x = displayMetrics.widthPixels * (targetXRatioPercent / 100f)
             val y = displayMetrics.heightPixels * (targetYRatioPercent / 100f)
-            tapAtCoordinates(x, y, "Fallback Ratio ($targetXRatioPercent%, $targetYRatioPercent%)")
-            lastLogMessage.value = "Dispatched fallback auto-tap gesture at $targetXRatioPercent%, $targetYRatioPercent%"
+            tapAtCoordinates(x, y)
+            lastLogMessage.value = "AUTO-ACCEPTED ride on $appLabel via fallback gesture tap at ${targetXRatioPercent}%, ${targetYRatioPercent}%"
             return true
         }
 
-        lastLogMessage.value = "Fare matched ₹$minFareThreshold, but 'Accept' button was not clickable on screen."
+        lastLogMessage.value = "Fare match found on $appLabel, but no clickable accept button was detected."
         return false
     }
 
@@ -187,7 +306,7 @@ class FareAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun tapAtCoordinates(x: Float, y: Float, label: String) {
+    private fun tapAtCoordinates(x: Float, y: Float) {
         val path = Path().apply {
             moveTo(x, y)
         }
@@ -197,14 +316,13 @@ class FareAccessibilityService : AccessibilityService() {
 
         dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                Log.d(TAG, "Gesture completed successfully: $label")
+                Log.d(TAG, "Gesture completed at ($x, $y)")
             }
         }, null)
     }
 
     override fun onInterrupt() {
         _isRunning.value = false
-        Log.d(TAG, "FareAccessibilityService Interrupted")
     }
 
     override fun onDestroy() {

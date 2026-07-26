@@ -81,19 +81,21 @@ fun FareFilterDashboardScreen() {
         }
     }
 
-    var minFareInput by remember { mutableStateOf("300") }
-    var exactOnly by remember { mutableStateOf(false) }
-    var serviceEnabled by remember { mutableStateOf(true) }
-    var selectedApp by remember { mutableStateOf("All Apps") }
+    val sharedPrefs = remember { context.getSharedPreferences("fare_filter_prefs", Context.MODE_PRIVATE) }
+
+    var minFareInput by remember { mutableStateOf(sharedPrefs.getInt("min_fare", 100).toString()) }
+    var exactOnly by remember { mutableStateOf(sharedPrefs.getBoolean("exact_only", false)) }
+    var serviceEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("service_active", true)) }
+    var selectedApp by remember { mutableStateOf(sharedPrefs.getString("target_app", "All Apps") ?: "All Apps") }
     
     // Auto-click target settings
-    var targetKeywords by remember { mutableStateOf("Accept, Accept Ride, Confirm, Accept Order") }
-    var cooldownSecondsInput by remember { mutableStateOf("4") } // Minimum interval between auto-clicks
-    var enableFallbackGesture by remember { mutableStateOf(false) } // Safe default false
-    var targetXRatio by remember { mutableStateOf("50") } // % of screen width
-    var targetYRatio by remember { mutableStateOf("85") } // % of screen height
+    var targetKeywords by remember { mutableStateOf(sharedPrefs.getString("keywords", "Accept, Accept Ride, Confirm, Accept Order, Accept Trip") ?: "Accept, Accept Ride, Confirm") }
+    var cooldownSecondsInput by remember { mutableStateOf(sharedPrefs.getLong("cooldown_seconds", 2L).toString()) } // Minimum interval between auto-clicks
+    var enableFallbackGesture by remember { mutableStateOf(sharedPrefs.getBoolean("fallback_gesture", true)) }
+    var targetXRatio by remember { mutableStateOf(sharedPrefs.getInt("x_ratio", 50).toString()) } // % of screen width
+    var targetYRatio by remember { mutableStateOf(sharedPrefs.getInt("y_ratio", 85).toString()) } // % of screen height
 
-    // Keep FareAccessibilityService configuration parameters strictly in sync
+    // Keep FareAccessibilityService configuration parameters strictly in sync & persisted
     LaunchedEffect(
         minFareInput,
         exactOnly,
@@ -104,19 +106,26 @@ fun FareFilterDashboardScreen() {
         enableFallbackGesture,
         targetXRatio,
         targetYRatio,
-        isAccessibilityEnabled,
-        isOverlayEnabled
+        isAccessibilityEnabled
     ) {
-        val parsedFare = minFareInput.toIntOrNull() ?: 300
-        FareAccessibilityService.minFareThreshold = parsedFare
-        FareAccessibilityService.exactOnlyMatch = exactOnly
-        FareAccessibilityService.isServiceRuleActive = serviceEnabled && isAccessibilityEnabled && isOverlayEnabled
-        FareAccessibilityService.targetAppName = selectedApp
-        FareAccessibilityService.targetKeywordsList = targetKeywords.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        FareAccessibilityService.actionCooldownMs = ((cooldownSecondsInput.toLongOrNull() ?: 4L) * 1000L).coerceAtLeast(1000L)
-        FareAccessibilityService.enableFallbackGesture = enableFallbackGesture
-        FareAccessibilityService.targetXRatioPercent = targetXRatio.toIntOrNull() ?: 50
-        FareAccessibilityService.targetYRatioPercent = targetYRatio.toIntOrNull() ?: 85
+        val parsedFare = minFareInput.toIntOrNull() ?: 100
+        val parsedCooldown = cooldownSecondsInput.toLongOrNull() ?: 2L
+        val parsedX = targetXRatio.toIntOrNull() ?: 50
+        val parsedY = targetYRatio.toIntOrNull() ?: 85
+        val serviceActive = serviceEnabled && isAccessibilityEnabled
+
+        FareAccessibilityService.updatePrefs(
+            context = context,
+            minFare = parsedFare,
+            exactOnly = exactOnly,
+            serviceActive = serviceActive,
+            targetApp = selectedApp,
+            keywords = targetKeywords,
+            cooldownSeconds = parsedCooldown,
+            fallbackGesture = enableFallbackGesture,
+            xRatio = parsedX,
+            yRatio = parsedY
+        )
     }
 
     var simFareInput by remember { mutableStateOf("300") }
