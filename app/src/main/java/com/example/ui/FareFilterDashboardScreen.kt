@@ -30,6 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.LicenseInfo
+import com.example.data.LicenseManager
 import com.example.model.FareRule
 import com.example.model.TripNotificationLog
 import com.example.service.FareAccessibilityService
@@ -63,6 +66,21 @@ fun checkAccessibilityServiceEnabled(context: Context): Boolean {
 fun FareFilterDashboardScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // License and Subscription State
+    LaunchedEffect(Unit) {
+        LicenseManager.init(context)
+        LicenseManager.syncRemoteConfig(context)
+    }
+
+    val licenseInfo by LicenseManager.licenseInfo.collectAsStateWithLifecycle()
+    var showPaywallDialog by remember { mutableStateOf(false) }
+    var showAdminDialog by remember { mutableStateOf(false) }
+
+    val isAccessGranted = licenseInfo.isAccessGranted
+
+    // Show paywall modal if license is expired or remotely disabled
+    val shouldShowPaywall = showPaywallDialog || !isAccessGranted
 
     var isAccessibilityEnabled by remember { mutableStateOf(checkAccessibilityServiceEnabled(context)) }
     var isOverlayEnabled by remember { mutableStateOf(checkOverlayPermissionEnabled(context)) }
@@ -172,7 +190,15 @@ fun FareFilterDashboardScreen() {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+                SubscriptionStatusBanner(
+                    licenseInfo = licenseInfo,
+                    onOpenPaywall = { showPaywallDialog = true },
+                    onOpenAdminTools = { showAdminDialog = true }
+                )
+            }
+
+            item {
                 val allPermissionsReady = isAccessibilityEnabled && isOverlayEnabled
                 // Service status banner & toggle
                 Card(
@@ -873,6 +899,22 @@ fun FareFilterDashboardScreen() {
             item {
                 Spacer(modifier = Modifier.height(24.dp))
             }
+        }
+
+        if (shouldShowPaywall) {
+            SubscriptionPaywallDialog(
+                licenseInfo = licenseInfo,
+                onDismiss = { showPaywallDialog = false },
+                onKeyActivated = { showPaywallDialog = false },
+                onSyncRemote = { LicenseManager.syncRemoteConfig(context) }
+            )
+        }
+
+        if (showAdminDialog) {
+            AdminRemoteControlDialog(
+                licenseInfo = licenseInfo,
+                onDismiss = { showAdminDialog = false }
+            )
         }
     }
 }

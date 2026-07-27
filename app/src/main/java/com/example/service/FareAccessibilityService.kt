@@ -13,6 +13,7 @@ import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.data.LicenseManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -137,6 +138,10 @@ class FareAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         loadPrefs()
+        if (!LicenseManager.isAccessGranted(this)) {
+            lastLogMessage.value = "SUBSCRIPTION EXPIRED / DISABLED. Please contact @DriveTechSoft on Telegram to renew."
+            return
+        }
         if (!isServiceRuleActive || event == null) return
 
         // Retrieve package name safely from event or root window
